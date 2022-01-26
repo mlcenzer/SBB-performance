@@ -1,0 +1,685 @@
+---
+title: 'Modeling Flight Speed'
+author: "Anastasia Bernat"
+date: "5/4/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+setwd("~/Desktop/git_repositories/SBB-dispersal/avbernat_working_on/Dispersal/Winter_2020/stats/")
+
+library(lme4)
+library(rethinking)
+
+library(dplyr)
+library(tidyselect)
+library(stringr)
+
+library(glmnet)
+library(ggplotify)
+library(gridExtra)
+library(ggformula)
+library(randomcoloR)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Winter 2020 Flight Trials: Speed Flight Modeling {.tabset}
+
+Flight Trials Winter 2020 Dataset was conducted from 2/17/2020 - 3/10/2020. Soapberry bugs were flight tested twice for multiple hours in the flight mill and observed from 8 AM to (5-8 PM) each day. Used multivariate (glm) and mixed effect modeling (glmer) to analyze the flight results.
+
+### Problems Noticing 
+
+- qqplots of **all** models are not normal. Might need to retransform the speed_diff data either by standardizing it or performing another transformation.
+
+- errors "refitting model(s) with ML (instead of REML)" and "boundary singular..." showing up a lot
+
+### All Flyers
+
+[Cleaning Data](#clean)
+
+[Testing Covariates](#test)
+
+[Without Mass](#wo.mass)
+
+[With Mass](#w.mass)
+
+[Morphology](#morph)
+
+<a id="clean"></a>
+
+**Cleaning the Data**
+
+```{r}
+source_path = "~/Desktop/git_repositories/SBB-dispersal/avbernat_working_on/Rsrc/"
+
+script_names = c("center_flight_data.R", # Re-centers data 
+                 "clean_flight_data.R", # Loads and cleans data
+                 "unique_flight_data.R",
+                 "get_warnings.R", 
+                 "compare_models.R",
+                 "regression_output.R", # Cleans regression outputs; prints in color or B&W
+                 "AICprobabilities.R",
+                 "plotting-lm.R",
+                 "plotting-lm2.R")
+
+for (script in script_names) { 
+  path = paste0(source_path, script)
+  source(path) 
+}
+
+output_col = FALSE # Change to TRUE if working in Base R or RStudio; FALSE if generating an HTML
+
+data <- read_flight_data("data/all_flight_data-Winter2020.csv")
+data_all <- data[[1]]
+data_tested <- data[[2]]
+#d <- create_delta_data(data_tested)
+```
+
+```{r}
+### Remove everyone who didn't fly 
+data_flew_all <- data_tested[data_tested$flew_b == 1, ] 
+
+### Check for low speeds
+low_speeds <- data_flew_all %>%
+  filter(average_speed <0.05)
+
+### Check for high speeds
+high_speeds <- data_flew_all %>%
+  filter(average_speed >0.65)
+
+low_speeds$flight_type# have 15 bugs with average_speed = 0 but were marked as bursters (this could be just something very short (second burst) - not enough to grant a calculation) - I decided to remove them. But one bug was continuous and had 0 distance and 0 speeds - that was bug 196 T2 set011-3-03-2020-A3_196.txt
+high_speeds$flight_type # 3 bugs - also bursters. Could also be short explosive bursts but not true to the biology of these bugs (more like us blowing on them).
+```
+
+```{r}
+### Remove those have 0 m/s speeds
+data_flew <- data_flew_all %>%
+  filter(average_speed > 0.05)
+  
+data_flew <- center_data(data_flew)
+```
+
+<a id="test"></a>
+
+**Testing Models and Covariates**
+
+```{r}
+test_model<-lmer(average_speed~host_c*sex_c*sym_dist + (1|ID), data=data_flew) #it converges - Run one set of models with ID as a random factor.
+getME(test_model, "lower")
+```
+
+```{r echo=FALSE}
+#######testing some covariates:
+data_flew$chamber <- relevel(data_flew$chamber, ref="A-2")
+
+####### Effect of chamber B-2 and B-4
+tidy_regression(lmer(average_speed~chamber + (1|ID), data=data_flew), is_color=output_col) ###Possibly reductions in speed 
+
+####### No effect of test date
+tidy_regression(lmer(average_speed~days_from_start + (1|chamber), data=data_flew), is_color=output_col)
+
+####### No effect of test time
+tidy_regression(lmer(average_speed~min_from_IncStart + (1|trial_type), data=data_flew), is_color=output_col)
+
+```
+
+<a id="wo.mass"></a>
+
+**Without Mass**
+
+```{r message=FALSE}
+data<-data.frame(R=data_flew$average_speed,
+                 A=data_flew$host_c, 
+                 B=data_flew$sex_c, 
+                 C=data_flew$sym_dist, 
+                 X=data_flew$ID)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+errors = withWarnings(model_comparisonsAIC(model_script))
+cat("Number of models that failed to converge: ", length(errors$warnings))
+```
+
+```{r}
+anova(m0, m2, test="Chisq") # Adding B improves fit
+anova(m2, m4, test="Chisq") # Adding Adoes not improve fit
+anova(m2, m6, test="Chisq") # Adding C does not improve fit
+```
+
+```{r}
+speed_model <- lmer(average_speed ~ sex_c + (1 | ID), data=data_flew, REML=FALSE)
+tidy_regression(speed_model, is_color=output_col)
+```
+
+* marginal effect of sex
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(speed_model))$p.value)
+qqnorm(resid(speed_model))
+qqline(resid(speed_model))
+text(-2, 0.1, s.test)
+```
+
+<a id="w.mass"></a>
+
+**With Mass**
+
+```{r}
+data_flew <- data_flew %>%
+  filter(!is.na(mass))
+data_flew <- center_data(data_flew)
+
+data<-data.frame(R=data_flew$average_speed,
+                 A=data_flew$host_c, 
+                 B=data_flew$sex_c, 
+                 C=data_flew$sym_dist, 
+                 D=data_flew$mass_c,
+                 X=data_flew$chamber) 
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 4-FF REMLF.R")
+errors = withWarnings(model_comparisonsAIC(model_script))
+cat("Number of models that failed to converge: ", length(errors$warnings))
+```
+
+
+```{r}
+anova(m0, m4, test="Chisq") # Adding D does improve fit
+anova(m0, m2, test="Chisq") # Adding B does improve fit
+```
+
+```{r}
+speed_model <- lmer(average_speed ~ sex_c + (1 | chamber), data=data_flew, REML=FALSE)
+tidy_regression(speed_model, is_color=output_col)
+```
+
+* positive effect of sex, so that if F then faster 
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(speed_model))$p.value)
+qqnorm(resid(speed_model))
+qqline(resid(speed_model))
+text(-2, 0.1, s.test)
+```
+
+<a id="morph"></a>
+
+**Morphology**
+
+```{r message=FALSE}
+data_flew <- data_flew %>%
+  filter(!is.na(mass)) %>%
+  filter(!is.na(body))
+data_flew <- center_data(data_flew)
+
+data<-data.frame(R=data_flew$average_speed,
+                 A=data_flew$thorax_c, 
+                 B=data_flew$body_c, 
+                 C=data_flew$wing_c,
+                 X=data_flew$ID) 
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+errors = withWarnings(model_comparisonsAIC(model_script))
+cat("Number of models that failed to converge: ", length(errors$warnings))
+```
+
+```{r}
+anova(m0, m1, test="Chisq") # Adding A does improve fit
+anova(m0, m2, test="Chisq") # Adding B does improve fit
+anova(m0, m3, test="Chisq") # Adding C does improve fit
+anova(m1, m5, test="Chisq") # Addihng C does not improve fit
+anova(m1, m4, test="Chisq") # Adding B does not improve fit
+```
+
+```{r}
+speed_morph_model <- lmer(average_speed ~ thorax_c + (1|ID), data=data_flew, REML=FALSE)
+tidy_regression(speed_morph_model, is_color=output_col)
+```
+
+* positive effect of thorax, where the longer the thorax, the faster the speed
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(speed_morph_model))$p.value)
+qqnorm(resid(speed_morph_model))
+qqline(resid(speed_morph_model))
+text(-2, 0.1, s.test)
+```
+
+### All Flyers Plots
+
+```{r}
+gf_histogram(~average_speed,data=data_flew_all, col=~flight_type) # before filtering outliers
+gf_histogram(~average_speed,data=data_flew, col=~flight_type) # after filtering outliers
+```
+
+```{r echo=FALSE, warning=FALSE}
+#, fig.width=2.8, fig.height=2.3}
+
+lm_plot(data_flew, "sym_dist", "average_speed", "Distance From Sympatric Zone", "Average Speed (m/s)", "Average Speed by Distance From Sympatric Zone (°)")
+
+lm_plot2(data_flew, "sex_c", "average_speed", "Sex", "Average Speed (m/s)", "Average Speed by Sex")
+axis(1, at = seq(-1,1,.5),labels=c("M", " ", " ", " ", "F"))
+
+lm_plot2(data_flew, "host_c", "average_speed", "Host Plant", "Average Speed (m/s)", "Average Speed by Host Plant")
+axis(1, at = seq(-1,1,.5),labels=c("BV", " ", " ", " ", "GRT"))
+
+data_flew <- data_flew %>%
+  filter(!is.na(mass_c))
+lm_plot(data_flew, "mass_c", "average_speed", "Mass",  "Average Speed (m/s)", "Average Speed by Mass")
+```
+
+```{r echo=FALSE, warning=FALSE}
+
+#, fig.width=2.8, fig.height=2.3}
+
+lm_plot(data_flew, "thorax_c", "average_speed", "Thorax Length (mm)",  "Average Speed (m/s)", "Average Speed by Thorax Length") # best model
+lm_plot(data_flew, "body_c", "average_speed", "Body Length (mm)", "Average Speed (m/s)", "Average Speed by Body Length")
+lm_plot(data_flew, "wing_c", "average_speed", "Wing Length (mm)", "Average Speed (m/s)", "Average Speed by Wing Length")
+lm_plot(data_flew, "beak_c", "average_speed", "Beak Length (mm)", "Average Speed (m/s)", "Average Speed by Beak Length")
+```
+
+### Continuous Flyers
+
+[Cleaning Data](#cleandata)
+
+[Testing Covariates](#testing)
+
+[Without Mass](#wo.massc)
+
+[With Mass](#w.massc)
+
+[Morphology](#morphc)
+
+<a id="cleandata"></a>
+
+**Cleaning the data**
+
+```{r}
+### Remove everyone who didn't fly (then remove distances = 0, if that didn't work fully)
+data_flew <- data_tested[data_tested$flew_b == 1, ]
+data_flew <- data_flew[data_flew$average_speed > 0, ]
+data_flew <- center_data(data_flew)
+
+### Break up by flight type
+dC<-data_flew[data_flew$flight_type=="C" | data_flew$flight_type=="BC" | data_flew$flight_type=="CB",] # this includes BC or CB flyers 
+dC <- center_data(dC)
+```
+
+<a id="testing"></a>
+
+**Testing Models and Covariates**
+
+```{r}
+test_model<-lmer(average_speed~host_c*sex_c*sym_dist + (1|ID), data=dC) #it converges - Run one set of models with ID as a random factor.
+getME(test_model, "lower")
+```
+
+```{r echo=FALSE}
+#######testing some covariates:
+dC$chamber <- relevel(dC$chamber, ref="A-2")
+
+####### Effect of chamber B-4, B-3, B-2
+tidy_regression(lmer(average_speed~chamber + (1|ID), data=dC), is_color=output_col) ###Possibly reductions in speed 
+
+####### No effect of test date
+tidy_regression(lmer(average_speed~days_from_start + (1|ID), data=dC), is_color=output_col)
+
+####### No effect of test time
+tidy_regression(lmer(average_speed~min_from_IncStart + (1|ID), data=dC), is_color=output_col)
+```
+
+<a id="wo.massc"></a>
+
+**Without Mass**
+
+```{r}
+data<-data.frame(R=dC$average_speed,
+                 A=dC$host_c, 
+                 B=dC$sex_c, 
+                 C=dC$sym_dist, 
+                 X=dC$ID)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+errors = withWarnings(model_comparisonsAIC(model_script))
+cat("Number of models that failed to converge: ", length(errors$warnings))
+```
+
+```{r}
+anova(m2, m4, test="Chisq") # Adding A does not improve fit
+anova(m2, m6, test="Chisq") # Adding B does not improve fit
+```
+
+```{r}
+continuous_model <- lmer(average_speed ~ sex_c + (1|ID), data=dC, REML=FALSE)
+tidy_regression(continuous_model, is_color=output_col)
+
+continuous_model <- lmer(average_speed ~ sex_c + (1|chamber) + (1|ID), data=dC, REML=FALSE)
+tidy_regression(continuous_model, is_color=output_col) # Adding chamber improves fit
+```
+
+* positive effect of sex_c, where if a female continuous-flyer bug then more likely to fly faster on average 
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(continuous_model))$p.value)
+qqnorm(resid(continuous_model))
+qqline(resid(continuous_model))
+text(-1, 0.1, s.test)
+```
+
+<a id="w.massc"></a>
+
+**With Mass**
+
+```{r}
+data<-data.frame(R=dC$average_speed,
+                 A=dC$host_c, 
+                 B=dC$sex_c, 
+                 C=dC$sym_dist,
+                 D=dC$mass_c,
+                 X=dC$ID)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 4-FF REMLF.R")
+errors = withWarnings(model_comparisonsAIC(model_script))
+cat("Number of models that failed to converge: ", length(errors$warnings))
+```
+
+```{r}
+anova(m20, m30, test="Chisq") # Adding A does not improve fit
+anova(m20, m31, test="Chisq") # Adding C does not improve fit
+```
+
+```{r}
+continuous_model <- lmer(average_speed ~ sex_c*mass_c + (1|ID), data=dC)
+tidy_regression(continuous_model, is_color=output_col)
+
+continuous_model <- lmer(average_speed ~ sex_c*mass_c + (1|chamber) + (1|ID), data=dC)
+tidy_regression(continuous_model, is_color=output_col) # Adding chamber improves model
+```
+
+* no effect of sex_c
+* no effect of mass_c
+* negative effect of sex_c*mass_c, where if female and heavier, then slower avg speed (make sense because probably due to egg-laying)
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(continuous_model))$p.value)
+qqnorm(resid(continuous_model))
+qqline(resid(continuous_model))
+text(-1, 0.1, s.test)
+```
+
+
+<a id="morphc"></a>
+
+**Morphology**
+
+```{r}
+dC<-data_flew[data_flew$flight_type=="C",] 
+dC <- dC %>%
+  filter(!is.na(body))
+dC <- center_data(dC)
+
+data<-data.frame(R=dC$average_speed,
+                 A=dC$thorax_c, 
+                 B=dC$body_c, 
+                 C=dC$wing_c,
+                 X=dC$ID)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+errors = withWarnings(model_comparisonsAIC(model_script))
+cat("Number of models that failed to converge: ", length(errors$warnings))
+```
+
+```{r}
+anova(m10, m13, test="Chisq") # Adding A does not improve fit
+```
+
+```{r}
+continuous_morph_model <- lmer(average_speed ~ body_c*wing_c + (1|ID), data=dC)
+tidy_regression(continuous_morph_model, is_color=output_col)
+
+continuous_morph_model <- lmer(average_speed ~ body_c*wing_c + (1|ID) + (1|chamber), data=dC)
+tidy_regression(continuous_morph_model, is_color=output_col) # improves model
+```
+
+* positive effect of body length, where the longer the body the faster the avg speed
+* negative effect of wing length, where the longer the wing the slower the avg speed
+* neg eggect of body* wing, where the longer the wing *body  the slower the avg speed
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(continuous_morph_model))$p.value)
+qqnorm(resid(continuous_morph_model))
+qqline(resid(continuous_morph_model))
+text(-1, 0.1, s.test)
+```
+
+### Continuous Flyers Plots
+
+```{r}
+gf_histogram(~average_speed,data=dC)
+```
+
+```{r echo=FALSE, warning=FALSE}
+
+#, fig.width=2.8, fig.height=2.3}
+
+lm_plot(dC, "sym_dist", "average_speed", "Distance From Sympatric Zone", "Average Speed (m/s)", "Average Speed by Distance From Sympatric Zone")
+
+lm_plot2(dC, "sex_c", "average_speed", "Sex", "Average Speed (m/s)", "Average Speed by Sex")
+axis(1, at = seq(-1,1,.5),labels=c("M", " ", " ", " ", "F"))
+
+lm_plot2(dC, "host_c", "average_speed", "Host Plant", "Average Speed (m/s)", "Average Speed by Host Plant")
+axis(1, at = seq(-1,1,.5),labels=c("BV", " ", " ", " ", "GRT"))
+
+dC <- dC %>%
+  filter(!is.na(mass_c))
+lm_plot(dC, "mass_c", "average_speed", "Mass", "Average Speed (m/s)", "Average Speed by Mass")
+```
+
+```{r echo=FALSE, warning=FALSE}
+
+#, fig.width=2.8, fig.height=2.3}
+
+lm_plot(dC, "thorax_c", "average_speed", "Thorax Length (mm)",  "Average Speed (m/s)", "Average Speed by Thorax Length") # best model
+lm_plot(dC, "body_c", "average_speed", "Body Length (mm)", "Average Speed (m/s)", "Average Speed by Body Length")
+lm_plot(dC, "wing_c", "average_speed", "Wing Length (mm)", "Average Speed (m/s)", "Average Speed by Wing Length")
+lm_plot(dC, "beak_c", "average_speed", "Beak Length (mm)", "Average Speed (m/s)", "Average Speed by Beak Length")
+```
+
+### Bursters
+
+[Cleaning Data](#cleanthedata)
+
+[Testing Covariates](#testingcov)
+
+[Without Mass](#wo.massb)
+
+[With Mass](#w.massb)
+
+[Morphology](#morphb)
+
+<a id="cleanthedata"></a>
+
+**Cleaning the data**
+
+```{r}
+### Remove everyone who didn't fly (then remove distances = 0, if that didn't work fully)
+data_flew <- data_tested[data_tested$flew_b == 1, ]
+data_flew <- data_flew %>%
+  filter(average_speed > 0) %>%
+  filter(average_speed < 0.65)
+data_flew <- center_data(data_flew)
+
+### Break up by flight type
+dB<-data_flew[data_flew$flight_type=="B",] # this exclusdes BC or CB flyers 
+dB <- center_data(dB)
+```
+
+<a id="testingcov"></a>
+
+**Testing Models and Covariates**
+
+```{r}
+test_model<-lmer(average_speed~host_c*sex_c*sym_dist + (1|ID), data=dB) #it converges - Run one set of models with ID as a random factor.
+getME(test_model, "lower")
+```
+
+```{r echo=FALSE}
+#######testing some covariates:
+dB$chamber <- relevel(dB$chamber, ref="A-2")
+
+####### Maringal effect of chamber B-4
+tidy_regression(lmer(average_speed~chamber + (1|ID), data=dB), is_color=output_col)
+
+####### No effect of test date
+tidy_regression(lmer(average_speed~days_from_start + (1|ID), data=dB), is_color=output_col)
+
+####### No effect of test time
+tidy_regression(lmer(average_speed~min_from_IncStart + (1|trial_type), data=dB), is_color=output_col)
+```
+
+<a id="wo.massb"></a>
+
+**Without Mass**
+
+```{r}
+data<-data.frame(R=dB$average_speed,
+                 A=dB$host_c, 
+                 B=dB$sex_c, 
+                 C=dB$sym_dist, 
+                 X=dB$ID, Y=dB$chamber) 
+
+model_script = paste0(source_path,"generic models-gaussian glmer 2-RF + 3-FF.R")
+errors = withWarnings(model_comparisonsAIC(model_script))
+cat("Number of models that failed to converge: ", length(errors$warnings))
+```
+
+```{r}
+anova(m18, m0, test="Chisq") # Replacing Y with X improves the fit
+anova(m0, m36, test="Chisq") # Adding Y Marginally improves the fit
+```
+
+```{r}
+burster_model <- lmer(average_speed ~ (1|ID), data=dB) # null model the best fit model
+tidy_regression(burster_model, is_color=output_col)
+```
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(burster_model))$p.value)
+qqnorm(resid(burster_model))
+qqline(resid(burster_model))
+text(-1, 0.1, s.test)
+```
+
+
+<a id="w.massb"></a>
+
+**With Mass**
+
+```{r}
+data<-data.frame(R=dB$average_speed,
+                 A=dB$host_c, 
+                 B=dB$sex_c, 
+                 C=dB$sym_dist,
+                 D=dB$mass_c,
+                 X=dB$trial_type, Y=dB$chamber)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 2-RF + 4-FF.R")
+errors = withWarnings(model_comparisonsAIC(model_script))
+cat("Number of models that failed to converge: ", length(errors$warnings))
+```
+
+```{r}
+anova(m113, m117, test="Chisq") # Adding D does not improve fit
+anova(m113, m226, test="Chisq") # Adidng X does not improve fit
+anova(m0, m4, test="Chisq") # Adding D does not improve fit
+anova(m226, m230, test="Chisq") # Adding D does not improve fit
+```
+
+```{r}
+burster_model <- lmer(average_speed ~ (1|chamber), data=dB) # null model the best fit model
+tidy_regression(burster_model, is_color=output_col)
+```
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(burster_model))$p.value)
+qqnorm(resid(burster_model))
+qqline(resid(burster_model))
+text(-1, 0.1, s.test)
+```
+
+<a id="morphb"></a>
+
+**Morphology**
+
+```{r}
+dB<-data_flew[data_flew$flight_type=="B",] 
+dB <- dB %>%
+  filter(!is.na(body))
+dB <- center_data(dB)
+
+data<-data.frame(R=dB$average_speed,
+                 A=dB$thorax_c, 
+                 B=dB$body_c, 
+                 C=dB$wing_c,
+                 X=dB$trial_type, Y=dB$chamber) 
+
+model_script = paste0(source_path,"generic models-gaussian glmer 2-RF + 3-FF.R")
+errors = withWarnings(model_comparisonsAIC(model_script))
+cat("Number of models that failed to converge: ", length(errors$warnings))
+```
+
+```{r}
+anova(m18, m19, test="Chisq") # Adding A does marginally improve fit
+anova(m0, m36, test="Chisq") # Adding Y does not impove fit
+```
+
+```{r}
+burster_morph_model <- lmer(average_speed ~ thorax_c + (1|chamber), data=dB)
+tidy_regression(burster_morph_model, is_color=output_col) # thorax not significant - null model best fit 
+burster_morph_model <- lmer(average_speed ~ (1|chamber), data=dB)
+tidy_regression(burster_morph_model, is_color=output_col) 
+```
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(burster_morph_model))$p.value)
+qqnorm(resid(burster_morph_model))
+qqline(resid(burster_morph_model))
+text(-1, 0.1, s.test)
+```
+
+
+
+### Burster Plots
+
+```{r}
+gf_histogram(~average_speed,data=dB)
+```
+
+```{r echo=FALSE, warning=FALSE}
+
+#, fig.width=2.8, fig.height=2.3}
+
+lm_plot(dB, "sym_dist", "average_speed", "Distance From Sympatric Zone", "Average Speed (m/s)", "Average Speed by Distance From Sympatric Zone")
+
+lm_plot2(dB, "sex_c", "average_speed", "Sex", "Average Speed (m/s)", "Average Speed by Sex")
+axis(1, at = seq(-1,1,.5),labels=c("M", " ", " ", " ", "F"))
+
+lm_plot2(dB, "host_c", "average_speed", "Host Plant", "Average Speed (m/s)", "Average Speed by Host Plant")
+axis(1, at = seq(-1,1,.5),labels=c("BV", " ", " ", " ", "GRT"))
+
+dB <- dB %>%
+  filter(!is.na(mass_c))
+lm_plot(dB, "mass_c", "average_speed", "Mass", "Average Speed (m/s)", "Average Speed by Mass")
+```
+
+```{r echo=FALSE, warning=FALSE}
+
+#, fig.width=2.8, fig.height=2.3}
+
+lm_plot(dB, "thorax_c", "average_speed", "Thorax Length (mm)",  "Average Speed (m/s)", "Average Speed by Thorax Length") # best model
+lm_plot(dB, "body_c", "average_speed", "Body Length (mm)", "Average Speed (m/s)", "Average Speed by Body Length")
+lm_plot(dB, "wing_c", "average_speed", "Wing Length (mm)", "Average Speed (m/s)", "Average Speed by Wing Length")
+lm_plot(dB, "beak_c", "average_speed", "Beak Length (mm)", "Average Speed (m/s)", "Average Speed by Beak Length")
+```

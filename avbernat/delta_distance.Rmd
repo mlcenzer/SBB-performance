@@ -1,0 +1,336 @@
+---
+title: "Delta Distance"
+author: "Anastasia Bernat"
+date: "3/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+setwd("~/Desktop/git_repositories/SBB-dispersal/avbernat_working_on/Dispersal/Winter_2020/stats/")
+
+library(lme4)
+library(dplyr)
+library(tidyselect)
+library(glmnet)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Delta Distance Modeling {.tabset}
+
+### All Bugs
+
+#### Problems Noticing 
+
+- qqplots of **all** models are not normal and the best fit model is the null model for all. Might need to retransform the distance_diff data either by standardizing it or performing another transformation. (NOTE: only did analyses for bugs that flew and had a distance > 0.)
+
+#### Summary
+
+- (For all bugs) Mass difference between trials matter (gains mass then looses distance).
+- (For bugs that flew some distance) Distance or delta distance has nothing to do with the wing2body ratio. It rarely has anything to do with sex or mass or eggs laid. But from the flight_distance.Rmd script, it seems to be heavily dependent on time of day.
+
+#### All Data
+
+```{r}
+source_path = "~/Desktop/git_repositories/SBB-dispersal/avbernat_working_on/Rsrc/"
+
+script_names = c("center_flight_data.R", # Re-centers data 
+                 "clean_flight_data.R", # Loads and cleans data
+                 "unique_flight_data.R",
+                 "get_warnings.R", 
+                 "compare_models.R",
+                 "regression_output.R", # Cleans regression outputs; prints in color or B&W
+                 "AICprobabilities.R")
+
+for (script in script_names) { 
+  path = paste0(source_path, script)
+  source(path) 
+}
+
+output_col = FALSE # Change to TRUE if working in Base R or RStudio; FALSE if generating an HTML
+
+data <- read_flight_data("data/all_flight_data-Winter2020.csv")
+data_all <- data[[1]]
+data_tested <- data[[2]]
+d <- create_delta_data(data_tested)
+```
+
+**No mass_diff**
+
+```{r message=FALSE}
+d <- d %>%
+  filter(!is.na(mass_diff))
+
+R = d$dist_diff
+A = d$host_c
+B = d$sex_c
+C = d$wing2body
+D = d$mass_diff 
+X = d$population 
+
+data<-data.frame(R, A, B, C, D, X)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 4-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+```{r}
+anova(m0, m4, test="Chisq") # mass matters
+anova(m4, m9, test="Chisq")
+anova(m4, m7, test="Chisq")
+```
+```{r}
+dist_model <- lmer(dist_diff ~ mass_diff + (1 | population), data=d, REML=FALSE)
+tidy_regression(dist_model, is_color=output_col)
+```
+If a bug gains mass then its distance decreases between trials.
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(dist_model))$p.value)
+qqnorm(resid(dist_model))
+qqline(resid(dist_model))
+text(-1, 5000, s.test)
+```
+
+#### Females Only
+
+```{r}
+d_fem <- d[d$sex == "F",] # very low sample size | also need to recenter
+```
+
+**No mass_diff**
+
+```{r message=FALSE}
+R = d_fem$dist_diff
+A = d_fem$egg_case
+B = d_fem$wing2body
+C = d_fem$mass_diff 
+X = d_fem$population 
+
+data<-data.frame(R, A, B, C, X)
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+Null model the best.
+
+#### Males Only
+
+```{r}
+d_male <- d[d$sex == "M",] # need to recenter
+```
+
+**No mass_diff**
+
+```{r message=FALSE}
+R = d_male$dist_diff
+A = d_male$host_c
+B = d_male$wing2body
+C = d_male$mass_diff 
+X = d_male$population 
+
+data<-data.frame(R, A, B, C, X)
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+Null model the best.
+
+### Bugs That Flew Some Distance
+
+```{r}
+### Remove everyone who didn't fly (then remove distances = 0, if that didn't work fully)
+data_flew <- data_tested[data_tested$flew_b == 1, ]
+data_flew <- data_flew[data_flew$distance > 0, ] # 6 bugs 
+data_flew <- center_data(data_flew)
+d <- create_delta_data(data_flew)
+```
+
+```{r}
+d$dist_diff_c = d$dist_diff - mean(d$dist_diff)
+d$dist_diff_s =  (d$dist_diff - mean(d$dist_diff)) / sd(d$dist_diff)
+```
+
+#### Visualizing Distributions
+
+```{r}
+par(mfrow=c(2,2))
+hist(d$dist_diff, col=4)
+hist(d$mass_diff, col=4)
+hist(d$wing2body_c, col=4)
+hist(d$sym_dist, col=4)
+```
+
+#### Delta Distance 
+
+**Testing mass_diff
+
+```{r}
+## Test
+tidy_regression(lm(dist_diff ~ sym_dist, data=d), is_color = output_col) # no effect of sym_dist
+```
+
+Removing sym dist and using wing2body.
+
+**No mass_diff**
+
+```{r message=FALSE}
+R = d$dist_diff
+A = d$host_c
+B = d$sex_c
+C = d$wing2body
+D = d$mass_diff 
+X = d$population 
+
+data<-data.frame(R, A, B, C, D, X)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+```{r}
+dist_model <- lmer(dist_diff ~ 1 + (1 | population), data=d, REML=FALSE)
+tidy_regression(dist_model, is_color=output_col)
+```
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(dist_model))$p.value)
+qqnorm(resid(dist_model))
+qqline(resid(dist_model))
+text(-1, 5000, s.test)
+```
+
+**Mass_diff**
+
+```{r message=FALSE}
+d <- d %>%
+  filter(!is.na(mass_diff))
+
+R = d$dist_diff
+A = d$host_c
+B = d$sex_c
+C = d$wing2body
+D = d$mass_diff 
+X = d$population 
+
+data<-data.frame(R, A, B, C, D, X)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 4-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+```{r}
+anova(m0, m4, test="Chisq") # Adding D does not improve fit
+```
+
+Null is the best model again.
+
+#### Females Only
+
+```{r}
+d_fem <- d[d$sex == "F",] # very low sample size | also need to recenter
+```
+
+
+**No mass_diff**
+
+```{r message=FALSE}
+R = d_fem$dist_diff
+A = d_fem$host_c
+B = d_fem$wing2body
+C = d_fem$mass_diff 
+X = d_fem$population 
+
+data<-data.frame(R, A, B, C, X)
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 2-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+```{r}
+anova(m0, m1, test="Chisq") # Adding A (or B) does not improve fit
+```
+
+**mass_diff**
+
+```{r message=FALSE}
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+Null is the best model for both again.
+
+```{r}
+dist_model <- lmer(dist_diff ~ 1 + (1 | population), data=d_fem, REML=FALSE)
+tidy_regression(dist_model, is_color=output_col)
+```
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(dist_model))$p.value)
+qqnorm(resid(dist_model))
+qqline(resid(dist_model))
+text(-1, 5000, s.test)
+```
+
+**egg_case**
+
+**No mass_diff**
+
+```{r message=FALSE}
+R = d_fem$dist_diff
+A = d_fem$egg_case
+B = d_fem$wing2body
+C = d_fem$mass_diff 
+X = d_fem$population 
+
+data<-data.frame(R, A, B, C, X)
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+Null is the best fit again.
+
+#### Males Only
+
+```{r}
+d_male <- d[d$sex == "M",] # need to recenter
+```
+
+**No mass_diff**
+
+```{r message=FALSE}
+R = d_male$dist_diff
+A = d_male$host_c
+B = d_male$wing2body
+C = d_male$mass_diff 
+X = d_male$population 
+
+data<-data.frame(R, A, B, C, X)
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 2-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+```{r}
+anova(m0, m1, test="Chisq") # Adding A (or B) does not improve fit
+```
+
+**mass_diff**
+
+```{r message=FALSE}
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+Null is the best model for both again.
+
+```{r}
+dist_model <- lmer(dist_diff ~ 1 + (1 | population), data=d_male, REML=FALSE)
+tidy_regression(dist_model, is_color=output_col)
+```
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(dist_model))$p.value)
+qqnorm(resid(dist_model))
+qqline(resid(dist_model))
+text(-1, 5000, s.test)
+```
+

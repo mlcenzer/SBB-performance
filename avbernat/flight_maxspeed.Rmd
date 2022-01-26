@@ -1,0 +1,130 @@
+---
+title: 'Modeling Flight Maximum Speed'
+author: "Anastasia Bernat"
+date: "12/16/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+setwd("~/Desktop/git_repositories/SBB-dispersal/avbernat_working_on/Dispersal/Winter_2020/stats/")
+
+library(lme4)
+library(rethinking)
+
+library(dplyr)
+library(tidyselect)
+library(stringr)
+
+library(glmnet)
+library(ggplotify)
+library(gridExtra)
+library(ggformula)
+library(randomcoloR)
+library(rstatix)
+library(ggpubr)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Winter 2020 Flight Trials: Speed Flight Modeling {.tabset}
+
+Flight Trials Winter 2020 Dataset was conducted from 2/17/2020 - 3/10/2020. Soapberry bugs were flight tested twice for multiple hours in the flight mill and observed from 8 AM to (5-8 PM) each day. Used multivariate (glm) and mixed effect modeling (glmer) to analyze the flight results.
+
+### Cleaning the Data
+
+```{r}
+source_path = "~/Desktop/git_repositories/SBB-dispersal/avbernat_working_on/Rsrc/"
+
+script_names = c("center_flight_data.R", # Re-centers data 
+                 "clean_flight_data.R" # Loads and cleans data
+                  )
+
+for (script in script_names) { 
+  path = paste0(source_path, script)
+  source(path) 
+}
+
+data <- read_flight_data("data/all_flight_data-Winter2020.csv")
+data_all <- data[[1]]
+data_tested <- data[[2]]
+
+data_flew_all <- data_tested[data_tested$flew_b == 1, ] # remove who didn't fly
+```
+
+```{r}
+data_flew_all = read.csv("data/flight_stats_summary5.csv")
+data_flew_all <- data_flew_all[data_flew_all$average_speed != 0, ]
+
+par(mfrow=c(2,2))
+hist(data_flew_all$max_speed1,   # not normally distributed
+     main="Max Speed Histogram", 
+     xlab="Max Speed (m/s)", 
+     ylim=c(0,100))
+hist(data_flew_all$max_speed2,   # not normally distributed
+     main="Max Speed Histogram", 
+     xlab="Max Speed (m/s)", 
+     ylim=c(0,100))
+hist(data_flew_all$max_speed3,   # not normally distributed
+     main="Max Speed Histogram", 
+     xlab="Max Speed (m/s)", 
+     ylim=c(0,100))
+hist(data_flew_all$max_speed4,   # not normally distributed
+     main="Max Speed Histogram", 
+     xlab="Max Speed (m/s)", 
+     ylim=c(0,100))
+hist(data_flew_all$max_speed10,   # not normally distributed
+     main="Max Speed Histogram", 
+     xlab="Max Speed (m/s)", 
+     ylim=c(0,100))
+```
+
+```{r fig.height=10, fig.width=10}
+small = data_flew_all %>%
+  select(max_speed1, max_speed2, max_speed3, max_speed4)
+
+
+v = c(1,2,3,4)
+plot(v, unlist(c(data_flew_all[1,15:18])), ylim=c(0,0.8), type="l")
+for (i in seq(2,93, 1)) {
+  points(v, unlist(c(data_flew_all[i,15:18])), type="l")
+}
+```
+
+
+```{r}
+par(mfrow=c(1,2))
+hist(data_flew_all$max_speed1,   # not normally distributed
+     main="Max Speed Histogram", 
+     xlab="Max Speed (m/s)", 
+     ylim=c(0,100))
+# boxplot(max_speed1~sex,data=data_flew_all, 
+#         main="Max Speed by Sex Boxplot",
+#         ylab="Max Speed (m/s)", 
+#         xlab="Sex")
+```
+
+```{r}
+sort(data_flew_all$max_speed1) # need to do flight trajectories to see *where* these pop up
+```
+
+```{r}
+# pwc = "Pairwise Wilcoxon test" between groups
+pwc <- data_flew_all %>% 
+  dunn_test(max_speed1 ~ sex, p.adjust.method = "bonferroni") %>%
+  add_xy_position(x = "sex")
+res.kruskal <- data_flew_all %>% kruskal_test(max_speed1 ~ sex)
+
+ggplot(data_flew_all, aes(sex, max_speed1)) + 
+  geom_violin() +
+    labs(
+    subtitle = get_test_label(res.kruskal, detailed = TRUE), 
+    caption = get_pwc_label(pwc)
+    ) + 
+  theme(legend.position="none") +
+  xlab("Sex") +
+  ylab("Max speed (m/s)") +
+  geom_boxplot(width=0.1) +
+  stat_pvalue_manual(pwc, hide.ns = TRUE)
+```
+There's a difference in max speeds between the sexes where females can reach faster max speeds. 

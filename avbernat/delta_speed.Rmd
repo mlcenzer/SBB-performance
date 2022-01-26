@@ -1,0 +1,262 @@
+---
+title: "Delta Speed"
+author: "Anastasia Bernat"
+date: "3/18/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+library(lme4)
+library(dplyr)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Problems Noticing 
+
+- qqplots of **all** models are not normal. Might need to retransform the distance_speed data either by standardizing it or performing another transformation. 
+
+
+### Delta Speed
+
+```{r}
+source_path = "~/Desktop/git_repositories/SBB-dispersal/avbernat_working_on/Rsrc/"
+
+script_names = c("center_flight_data.R", # Re-centers data 
+                 "clean_flight_data.R", # Loads and cleans data
+                 "unique_flight_data.R",
+                 "get_warnings.R", 
+                 "compare_models.R",
+                 "regression_output.R", # Cleans regression outputs; prints in color or B&W
+                 "AICprobabilities.R",
+                 "multinom_functions.R")
+
+for (script in script_names) { 
+  path = paste0(source_path, script)
+  source(path) 
+}
+
+output_col = FALSE # Change to TRUE if working in Base R or RStudio; FALSE if generating an HTML
+
+data <- read_flight_data("data/all_flight_data-Winter2020.csv")
+data_all <- data[[1]]
+data_tested <- data[[2]]
+d <- create_delta_data(data_tested)
+```
+
+#### Speed Diff ~ Mass Diff
+
+```{r}
+## Strong effect of mass
+tidy_regression(lm(speed_diff ~ mass_diff, data=d), is_color = output_col) 
+```
+
+
+```{r}
+hist(d$speed_diff) # much more normally distributed data and later will see the residuals pass the Shapiro-Wilk test
+```
+
+**No mass_diff**
+
+```{r message=FALSE}
+R = d$speed_diff
+A = d$host_c
+B = d$sex_c
+C = d$sym_dist
+D = d$mass_diff 
+X = d$population 
+
+data<-data.frame(R, A, B, C, D, X)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+```{r}
+anova(m0, m2, test="Chisq") # Adding host matters
+anova(m2, m6, test="Chisq") # Adding sym_dist does not improve fit
+```
+
+```{r}
+speed_model <- lmer(speed_diff ~ host_c + (1 | population), data=d, REML=FALSE)
+tidy_regression(speed_model, is_color=output_col)
+```
+
+* no effect of host 
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(speed_model))$p.value)
+qqnorm(resid(speed_model))
+qqline(resid(speed_model))
+text(-1, 0.1, s.test)
+```
+
+**Mass_diff**
+
+```{r message=FALSE}
+data <- data %>%
+  filter(!is.na(D))
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 4-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+```{r}
+anova(m9, m14, test="Chisq") # Adding C does not improve fit
+```
+
+```{r}
+speed_model <- lmer(speed_diff ~ host_c + mass_diff + (1 | population), data=d, REML=FALSE)
+tidy_regression(speed_model, is_color=output_col)
+```
+
+Strong negative effect of mass_diff where a gain in mass leads to slower speeds.
+
+**wing2body**
+
+```{r message=FALSE}
+d <- d %>%
+  filter(!is.na(mass_diff))
+
+R = d$speed_diff
+A = d$host_c
+B = d$sex_c
+C = d$wing2body_s
+D = d$mass_diff 
+X = d$population 
+
+data<-data.frame(R, A, B, C, D, X)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 4-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+Same top model and wing2body makes no difference.
+
+
+So what if it was only females, since they had the greatest mass changes?
+
+### Delta Speed - Females Only
+
+```{r}
+d_fem <- d[d$sex == "F",] # low sample size 
+```
+
+**No mass_diff**
+
+```{r message=FALSE}
+R = d_fem$speed_diff
+A = d_fem$host_c
+B = d_fem$sym_dist
+C = d_fem$mass_diff 
+X = d_fem$population 
+
+data<-data.frame(R, A, B, C, X)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 2-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+```{r}
+anova(m0, m1, test="Chisq") # Adding A does not improve fit
+anova(m0, m2, test="Chisq") # Adding B does not improve fit
+```
+
+```{r}
+speed_model <- lmer(speed_diff ~ 1 + (1 | population), data=d_fem, REML=FALSE)
+tidy_regression(speed_model, is_color=output_col)
+```
+
+**mass_diff**
+
+```{r message=FALSE}
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+```{r}
+anova(m0, m1, test="Chisq") # strange. get error "refitting model(s) with ML (instead of REML)" even though these have been refit to REML=FALSE...
+anova(m0, m3, test="Chisq") # Adding C does improve fit
+anova(m0, m2, test="Chisq") # Adding B does not improve fit
+```
+
+```{r}
+speed_model <- lmer(speed_diff ~ mass_diff + (1 | population), data=d_fem, REML=FALSE)
+tidy_regression(speed_model, is_color=output_col)
+```
+
+Strong negative effect of mass. 
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(speed_model))$p.value)
+qqnorm(resid(speed_model))
+qqline(resid(speed_model))
+text(-1, 0.1, s.test)
+```
+
+**wing2body**
+
+```{r message=FALSE}
+R = d_fem$speed_diff
+A = d_fem$host_c
+B = d_fem$wing2body_s
+C = d_fem$mass_diff 
+X = d_fem$population 
+
+data<-data.frame(R, A, B, C, X)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+```{r}
+anova(m3, m5, test="Chisq") # Adding C marginally improves fit
+anova(m5, m9, test="Chisq") # Adding A*C does not improve fit
+anova(m3, m6, test="Chisq") # Adding B does not improve fit
+```
+```{r}
+speed_model <- lmer(speed_diff ~ host_c + mass_diff + (1 | population), data=d_fem, REML=FALSE)
+tidy_regression(speed_model, is_color=output_col)
+```
+
+Strong negative effect of mass. 
+Marginal negative effect of host.
+
+```{r}
+s.test <- paste("pval: ", shapiro.test(residuals(speed_model))$p.value)
+qqnorm(resid(speed_model))
+qqline(resid(speed_model))
+text(-1, 0.1, s.test)
+```
+
+**eggs**
+
+```{r}
+R = d_fem$speed_diff
+A = d_fem$host_c
+B = d_fem$egg_case
+C = d_fem$mass_diff 
+X = d_fem$population 
+
+data<-data.frame(R, A, B, C, X)
+
+model_script = paste0(source_path,"generic models-gaussian glmer 1-RF + 3-FF REMLF.R")
+model_comparisonsAIC(model_script)
+```
+
+```{r}
+anova(m5, m7, test="Chisq") # Adding B does not improve fit
+anova(m5, m9, test="Chisq")
+```
+Egg case does not matter.
+
+### Plots
+
+```{r}
+plot(d$mass_diff, d$speed_diff, 
+     xlab="Changes in Mass between T1 and T2 (g)",
+     ylab="Changes in Speed between T1 and T2 (m/s)")
+```
+
+
+
+
